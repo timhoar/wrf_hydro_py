@@ -23,6 +23,8 @@ class Job(object):
             job_id: str,
             model_start_time: Union[str,pd.datetime] = None,
             model_end_time: Union[str,pd.datetime] = None,
+            restart_freq_hr: int = 1,
+            output_freq_hr: int = 1,
             restart: bool = True,
             exe_cmd: str = None,
             entry_cmd: str = None,
@@ -34,6 +36,8 @@ class Job(object):
             a pandas.to_datetime compatible string or a pandas datetime object.
             model_end_time: The model end time to use for the WRF-Hydro model run. Can be
             a pandas.to_datetime compatible string or a pandas datetime object.
+            restart_freq_hr: Restart write frequency, hours
+            output_freq_hr: Output write frequency, hours
             restart: Job is starting from a restart file. Use False for a cold start.
             exe_cmd: The system-specific command to execute WRF-Hydro, for example 'mpirun -np
             36 ./wrf_hydro.exe'. Can be left as None if jobs is added to a scheduler or if a
@@ -66,23 +70,34 @@ class Job(object):
         self._model_end_time = pd.to_datetime(model_end_time)
         """np.datetime64: The model time at the end of the execution."""
 
-        ## property construction
-        self._hrldas_times = {'noahlsm_offline':
-                                  {'kday': None,
-                                   'khour': None,
-                                   'start_year': None,
-                                   'start_month': None,
-                                   'start_day': None,
-                                   'start_hour': None,
-                                   'start_min': None,
-                                   'restart_filename_requested': None}
-                              }
+        self.restart_freq_hr = restart_freq_hr
+        """int: Restart write frequency in hours."""
 
-        self._hydro_times = {'hydro_nlist':
-                                 {'restart_file': None},
-                             'nudging_nlist':
-                                 {'nudginglastobsfile': None}
-                             }
+        self.output_freq_hr = output_freq_hr
+        """int: Output write frequency in hours."""
+
+        # property construction
+        self._hrldas_times = {
+            'noahlsm_offline':
+            {
+                'khour': None,
+                'restart_frequency_hours': None,
+                'output_timestep': None,
+                'start_year': None,
+                'start_month': None,
+                'start_day': None,
+                'start_hour': None,
+                'start_min': None,
+                'restart_filename_requested': None
+            }
+        }
+
+        self._hydro_times = {
+            'hydro_nlist': {'restart_file': None,
+                            'rst_dt': None,
+                            'out_dt': None},
+            'nudging_nlist': {'nudginglastobsfile': None}
+        }
 
         self._hydro_namelist = None
         self._hrldas_namelist = None
@@ -113,6 +128,8 @@ class Job(object):
             namelist: The namelist dictionary to add
         """
         self._hrldas_namelist = copy.deepcopy(namelist)
+        # Never use KDAY in wrfhydropy. This eliminates it entering the patch with the time info.
+        self._hrldas_namelist['noahlsm_offline'].pop('kday', None)
 
     def clone(self, N) -> list:
         """Clone a job object N-times using deepcopy.
@@ -184,15 +201,29 @@ class Job(object):
 
         cmd_string += '"'
 
-        # Set start time of job execution
-        self.job_start_time = str(datetime.datetime.now())
+        # Set start and end times
+        # 1) wall time of job execution in the job object and
+        # 2) (write to) file the model start and stop times.
+        
+        file_model_start_time = current_dir / '.model_start_time'
+        file_model_end_time = current_dir / '.model_end_time'
+        if file_model_end_time.exists():
+            file_model_end_time.unlink()
+        # Write the model start time now, but only write the file .model_end_time
+        # upon successful completion. See below.
+        with file_model_start_time.open(mode='w') as opened_file:
+            _ = opened_file.write(str(self._model_start_time))
 
-        self._proc_log = subprocess.run(cmd_string,
-                                        shell = True,
-                                        cwd=str(current_dir))
+        self.job_start_time = str(datetime.datetime.now())
+        
+        self._proc_log = subprocess.run(
+            cmd_string,
+            shell = True,
+            cwd=str(current_dir)
+        )
 
         self.job_end_time = str(datetime.datetime.now())
-
+        
         # String match diag files or stdout for successfull run if running on gfort or intel
         # Gfort outputs it to diag, intel outputs it to stdout
         diag_file = current_dir.joinpath('diag_hydro.00000')
@@ -232,23 +263,27 @@ class Job(object):
             self.pickle(str(self.job_dir.joinpath('WrfHydroJob_postrun.pkl')))
             raise RuntimeError('Model did not finish successfully')
 
+        # Only write the file .model_end_time upon successful completion.
+        if self.exit_status == 0:
+            with file_model_end_time.open('w') as opened_file:
+                _ = opened_file.write(str(self._model_end_time))
+        
         self.pickle(str(self.job_dir.joinpath('WrfHydroJob_postrun.pkl')))
 
     def _write_namelists(self):
         """Private method to write namelist dicts to FORTRAN namelist files"""
-        self.hydro_namelist.write(str(self.job_dir.joinpath('hydro.namelist')))
         self.hrldas_namelist.write(str(self.job_dir.joinpath('namelist.hrldas')))
+        self.hydro_namelist.write(str(self.job_dir.joinpath('hydro.namelist')))
 
     def _set_hrldas_times(self):
         """Private method to set model run times in the hrldas namelist"""
 
         if self._model_start_time is not None and self._model_end_time is not None:
             duration = self._model_end_time - self._model_start_time
-            if duration.seconds == 0:
-                self._hrldas_times['noahlsm_offline']['kday'] = int(duration.days)
-            else:
-                self._hrldas_times['noahlsm_offline']['khour'] =int(duration.days * 60 +
-                                                                    duration.seconds / 3600)
+
+            # Only use KHOUR. Never use KDAY in wrfhydropy.
+            self._hrldas_times['noahlsm_offline']['khour'] = \
+                int((duration.days * 24) + (duration.seconds / 3600))
 
             # Start
             self._hrldas_times['noahlsm_offline']['start_year'] = int(self._model_start_time.year)
@@ -267,6 +302,9 @@ class Job(object):
                 lsm_restart_file = lsm_restart_dirname + '/' + lsm_restart_basename
 
                 self._hrldas_times['noahlsm_offline']['restart_filename_requested'] = lsm_restart_file
+
+            self._hrldas_times['noahlsm_offline']['restart_frequency_hours'] = self.restart_freq_hr
+            self._hrldas_times['noahlsm_offline']['output_timestep'] = self.output_freq_hr * 3600
 
     def _set_hydro_times(self):
         """Private method to set model run times in the hydro namelist"""
@@ -289,6 +327,10 @@ class Job(object):
 
             self._hydro_times['hydro_nlist']['restart_file'] = hydro_restart_basename
             self._hydro_times['nudging_nlist']['nudginglastobsfile'] = nudging_restart_basename
+
+        self._hydro_times['hydro_nlist']['rst_dt'] = self.restart_freq_hr * 60
+        self._hydro_times['hydro_nlist']['out_dt'] = self.output_freq_hr * 60
+
 
     def _make_job_dir(self):
         """Private method to make the job directory"""
@@ -344,10 +386,8 @@ class Job(object):
         # model_end_time
         if 'khour' in noah_namelist.keys():
             duration = {'hours': noah_namelist['khour']}
-        elif 'kday' in noah_namelist.keys():
-            duration = {'days': noah_namelist['kday']}
         else:
-            raise ValueError("Neither KDAY nor KHOUR in namelist.hrldas.")
+            raise ValueError("KHOUR is not in namelist.hrldas (wrfhydropy only uses KHOUR).")
         model_end_time = model_start_time + datetime.timedelta(**duration)
 
         return model_start_time, model_end_time
@@ -396,7 +436,7 @@ class Job(object):
 
     @property
     def model_start_time(self):
-        """np.datetime64: The model time at the start of the execution."""
+        """datetime: The model time at the start of the execution."""
         return self._model_start_time
 
     @model_start_time.setter
@@ -405,10 +445,10 @@ class Job(object):
 
     @property
     def model_end_time(self):
+        """datetime: The model time at the end of the execution."""
         return self._model_end_time
 
     @model_end_time.setter
     def model_end_time(self, value):
         """np.datetime64: The model time at the start of the execution."""
         self._model_end_time = pd.to_datetime(value)
-

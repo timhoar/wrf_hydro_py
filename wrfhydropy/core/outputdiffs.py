@@ -11,7 +11,7 @@ from .simulation import SimulationOutput
 def compare_ncfiles(candidate_files: list,
                     reference_files: list,
                     stats_only: bool = False,
-                    nccmp_options: list = ['--data', '--metadata', '--force'],
+                    nccmp_options: list = None,
                     exclude_vars: list = None,
                     exclude_atts: list = None):
     """Compare lists of netcdf restart files element-wise. Files must have common names
@@ -20,14 +20,18 @@ def compare_ncfiles(candidate_files: list,
         reference_files: List of reference netcdf file paths
         stats_only: Only return statistics on differences in data values
         nccmp_options: List of long-form command line options passed to nccmp,
-        see http://nccmp.sourceforge.net/ for options
+        see http://nccmp.sourceforge.net/ for options. Defaults are '--metadata', '--force'
         exclude_vars: A list of strings containing variables names to
-        exclude from the comparison
-        exclude_atts: A list of strings containing attribute names to
-        exclude from the comparison
+        exclude from the comparison. Defaults are 'ACMELT', 'ACSNOW', 'SFCRUNOFF',
+        'UDRUNOFF', 'ACCPRCP','ACCECAN', 'ACCEDIR', 'ACCETRAN', 'qstrmvolrt', 'reference_time'
+        exclude_atts: A list of strings containing attribute names to exclude from the
+        comparison. Defaults are 'valid_min'
     Returns:
         A named list of either pandas dataframes if possible or subprocess objects
     """
+
+    if nccmp_options is None:
+        nccmp_options = ['--data', '--metadata', '--force']
 
     if len(candidate_files) != len(reference_files):
         raise ValueError('Length of candidate files does not match len of reference files')
@@ -53,29 +57,44 @@ class OutputDataDiffs(object):
     def __init__(self,
                  candidate_output: SimulationOutput,
                  reference_output: SimulationOutput,
-                 nccmp_options: list = ['--data', '--force'],
-                 exclude_vars: list = ['ACMELT', 'ACSNOW', 'SFCRUNOFF', 'UDRUNOFF', 'ACCPRCP',
-                                       'ACCECAN', 'ACCEDIR', 'ACCETRAN', 'qstrmvolrt',
-                                       'reference_time'],
-                 exclude_atts: list = ['valid_min']):
+                 nccmp_options: list = None,
+                 exclude_vars: list = None,
+                 exclude_atts: list = None):
         """Calculate Diffs between SimulationOutput objects from two WrfHydroSim objects
         Args:
             candidate_output: The candidate SimulationOutput object
             reference_output: The reference SimulationOutput object
             nccmp_options: List of long-form command line options passed to nccmp,
-            see http://nccmp.sourceforge.net/ for options
+            see http://nccmp.sourceforge.net/ for options. Defaults are '--data', '--force'
             exclude_vars: A list of strings containing variables names to
-            exclude from the comparison
-            exclude_atts: A list of strings containing attribute names to
-            exclude from the comparison
+            exclude from the comparison. Defaults are 'ACMELT', 'ACSNOW', 'SFCRUNOFF',
+            'UDRUNOFF', 'ACCPRCP','ACCECAN', 'ACCEDIR', 'ACCETRAN', 'qstrmvolrt', 'reference_time'
+            exclude_atts: A list of strings containing attribute names to exclude from the
+            comparison. Defaults are 'valid_min'
         Returns:
             An OutputDiffs object
         """
+
+        # Set default arguments
+        if nccmp_options is None:
+            nccmp_options = ['--data', '--force']
+
+        if exclude_vars is None:
+            exclude_vars = ['ACMELT', 'ACSNOW', 'SFCRUNOFF', 'UDRUNOFF', 'ACCPRCP',
+                            'ACCECAN', 'ACCEDIR', 'ACCETRAN', 'qstrmvolrt',
+                            'reference_time']
+
+        if exclude_atts is None:
+            exclude_atts = ['valid_min']
+
         # Instantiate all attributes
         self.diff_counts = dict()
         """dict: Counts of diffs by restart type"""
 
         self.channel_rt = list()
+        """list: List of pandas dataframes if possible or subprocess objects containing nudging
+        restart file diffs"""
+        self.channel_rt_grid = list()
         """list: List of pandas dataframes if possible or subprocess objects containing nudging
         restart file diffs"""
         self.chanobs = list()
@@ -98,8 +117,8 @@ class OutputDataDiffs(object):
         restart file diffs"""
 
         # Create list of attributes to diff
-        atts_list = ['channel_rt','chanobs','lakeout','gwout','restart_hydro','restart_lsm',
-                     'restart_nudging']
+        atts_list = ['channel_rt', 'channel_rt_grid', 'chanobs', 'lakeout', 'gwout',
+                     'restart_hydro', 'restart_lsm', 'restart_nudging']
         for att in atts_list:
             candidate_att = getattr(candidate_output,att)
             reference_att = getattr(reference_output,att)
@@ -126,24 +145,35 @@ class OutputMetaDataDiffs(object):
                  candidate_output: SimulationOutput,
                  reference_output: SimulationOutput,
                  stats_only=False,
-                 nccmp_options: list = ['--metadata', '--force'],
-                 exclude_vars: list = ['ACMELT', 'ACSNOW', 'SFCRUNOFF', 'UDRUNOFF', 'ACCPRCP',
-                                       'ACCECAN', 'ACCEDIR', 'ACCETRAN', 'qstrmvolrt',
-                                       'reference_time'],
-                 exclude_atts: list = ['valid_min']):
+                 nccmp_options: list = None,
+                 exclude_vars: list = None,
+                 exclude_atts: list = None):
         """Calculate Diffs between SimulationOutput objects from two WrfHydroSim objects
         Args:
             candidate_output: The candidate SimulationOutput object
             reference_output: The reference SimulationOutput object
             nccmp_options: List of long-form command line options passed to nccmp,
-            see http://nccmp.sourceforge.net/ for options
+            see http://nccmp.sourceforge.net/ for options. Defaults are '--metadata', '--force'
             exclude_vars: A list of strings containing variables names to
-            exclude from the comparison
-            exclude_atts: A list of strings containing attribute names to
-            exclude from the comparison
+            exclude from the comparison. Defaults are 'ACMELT', 'ACSNOW', 'SFCRUNOFF',
+            'UDRUNOFF', 'ACCPRCP','ACCECAN', 'ACCEDIR', 'ACCETRAN', 'qstrmvolrt', 'reference_time'
+            exclude_atts: A list of strings containing attribute names to exclude from the
+            comparison. Defaults are 'valid_min'
         Returns:
             An OutputDiffs object
         """
+        # Set default arguments
+        if nccmp_options is None:
+            nccmp_options = ['--metadata', '--force']
+
+        if exclude_vars is None:
+            exclude_vars = ['ACMELT', 'ACSNOW', 'SFCRUNOFF', 'UDRUNOFF', 'ACCPRCP',
+                            'ACCECAN', 'ACCEDIR', 'ACCETRAN', 'qstrmvolrt',
+                            'reference_time']
+
+        if exclude_atts is None:
+            exclude_atts = ['valid_min']
+
         # Instantiate all attributes
         self.diff_counts = dict()
         """dict: Counts of diffs by restart type"""
@@ -196,7 +226,7 @@ class OutputMetaDataDiffs(object):
 def _compare_nc_nccmp(candidate_nc: str,
                       reference_nc: str,
                       stats_only: bool = False,
-                      nccmp_options: list = ['--data','--metadata','--force'],
+                      nccmp_options: list = None,
                       exclude_vars: list = None,
                       exclude_atts: list = None):
 
@@ -207,14 +237,20 @@ def _compare_nc_nccmp(candidate_nc: str,
         reference_nc: The path for the reference netcdf file
         stats_only: Only return statistics on differences in data values
         nccmp_options: List of long-form command line options passed to nccmp,
-        see http://nccmp.sourceforge.net/ for options
+        see http://nccmp.sourceforge.net/ for options. Defaults are '--metadata', '--force'
         exclude_vars: A list of strings containing variables names to
-        exclude from the comparison
-        exclude_atts: A list of strings containing attribute names to
-        exclude from the comparison
+        exclude from the comparison. Defaults are 'ACMELT', 'ACSNOW', 'SFCRUNOFF',
+        'UDRUNOFF', 'ACCPRCP','ACCECAN', 'ACCEDIR', 'ACCETRAN', 'qstrmvolrt', 'reference_time'
+        exclude_atts: A list of strings containing attribute names to exclude from the
+        comparison. Defaults are 'valid_min'
     Returns:
         Either a pandas dataframe if possible or subprocess object
     """
+
+    # Set default arguments
+    if nccmp_options is None:
+        nccmp_options = ['--metadata', '--force']
+
     #Try and set files to strings
     candidate_nc = str(candidate_nc)
     reference_nc = str(reference_nc)
@@ -222,10 +258,9 @@ def _compare_nc_nccmp(candidate_nc: str,
     # Make string to pass to subprocess
     command_str = 'nccmp '
 
-    for item in nccmp_options:
-        command_str += item + ' '
+    command_str += ' '.join(nccmp_options)
 
-    command_str += '-S '
+    command_str += ' -S '
 
     if exclude_vars is not None:
         # Convert exclude_vars list into a comman separated string
